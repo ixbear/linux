@@ -12,17 +12,17 @@ backend default {
 	.between_bytes_timeout = 200s;
 	.max_connections = 800;
 }
- 
+
 acl purge {
 	"localhost";
 	"127.0.0.1";
 }
- 
+
 # 
 # Below is a commented-out copy of the default VCL logic.  If you
 # redefine any of these subroutines, the built-in logic will be
 # appended to your code.
- 
+
 sub vcl_recv {
  
 #	if (req.http.host ~ "(www.zhukun.net)") { 
@@ -35,7 +35,12 @@ sub vcl_recv {
  
 	# Set X-Forwarded-For header for logging in nginx
 	remove req.http.X-Forwarded-For;
-	set    req.http.X-Forwarded-For = client.ip;
+	set req.http.X-Forwarded-For = client.ip;
+
+	# Remove has_js and CloudFlare/Google Analytics __* cookies.
+	set req.http.Cookie = regsuball(req.http.Cookie, "(^|;\s*)(_[_a-z]+|has_js)=[^;]*", "");
+	# Remove a ";" prefix, if present.
+	set req.http.Cookie = regsub(req.http.Cookie, "^;\s*", "");
 	 
 	if (req.request == "PURGE") {
 		# If not allowed then a error 405 is returned
@@ -102,10 +107,10 @@ sub vcl_recv {
 		return (pass);
 	}
 	# ----- Start lnmp specific configuration -----
- 
+
 	return (lookup);
 }
- 
+
 sub vcl_fetch {
 	if (beresp.ttl <= 0s || beresp.http.Set-Cookie || beresp.http.Vary == "*") {
 		set beresp.ttl = 300s;
