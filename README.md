@@ -1,5 +1,6 @@
 linux
 =====
 
-some linux scripts
+some linux scripts.
+
 My blog: http://www.zhukun.net
