@@ -85,20 +85,14 @@ sub vcl_recv {
 	set req.http.Cookie = regsuball(req.http.Cookie, "wp-settings-time-1=[^;]+(; )?", "");
 	set req.http.Cookie = regsuball(req.http.Cookie, "wordpress_test_cookie=[^;]+(; )?", "");
  
-	if (req.url ~ "/feed") {
+	if (req.url ~ "/feed" || req.url ~ "/wp-(login|admin|cron)" || req.url ~ "preview=true") {
 		return (pass);
 	}
-	if (req.url ~ "/wp-(login|admin|cron)" || req.url ~ "preview=true") {
+	if (req.url ~ "/wp-content/uploads/" || req.http.Cookie ~ "wordpress_" || req.http.Cookie ~ "comment_") {
 		return (pass);
 	}
 	if (req.url ~ "wp-content/themes/" && req.url ~ "\.(css|js|png|gif|jp(e)?g)") {
 		unset req.http.cookie;
-	}
-	if (req.url ~ "/wp-content/uploads/") {
-		return (pass);
-	}
-	if (req.http.Cookie ~ "wordpress_" || req.http.Cookie ~ "comment_") {
-		return (pass);
 	}
 	# ----- End Wordpress specific configuration -----
  
