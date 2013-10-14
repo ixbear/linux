@@ -1,0 +1,92 @@
+参考文档：
+https://github.com/pkhamre/wp-varnish
+http://www.2tutu.com/post/2013/1472.html
+http://lnmpv.org/#install
+http://www.oschina.net/question/100267_51059
+http://www.ibm.com/developerworks/cn/opensource/os-cn-varnish-intro/
+http://blog.s135.com/post/313/
+http://opensourcehacker.com/2013/03/25/varnish-at-the-front-of-wordpress-apache-and-plone-cms-virtual-hosts/
+
+
+
+1，修改nginx.conf
+在http段中添加如下两行，同时修改监听端口为888
+http
+	{
+		……
+		client_max_body_size 50m;
+		port_in_redirect off;
+		……
+
+	server
+		{
+			listen       127.0.0.1:888;
+			……
+
+			
+			
+2，安装varnish
+CentOS 5：
+rpm --nosignature -i http://repo.varnish-cache.org/redhat/varnish-3.0/el5/noarch/varnish-release-3.0-1.el5.centos.noarch.rpm
+
+CentOS 6：
+rpm --nosignature -i http://repo.varnish-cache.org/redhat/varnish-3.0/el6/noarch/varnish-release-3.0-1.el6.noarch.rpm
+
+yum install varnish
+
+如果出现错误：Missing Dependency: libedit.so.0 is needed by
+解决办法：
+centos 5.x 32位用如下命令安装
+rpm -Uvh ftp://ftp.pbone.net/mirror/atrpms.net/el5-i386/atrpms/stable/libedit0-3.0-1.20090722cvs.el5.i386.rpm
+
+centos 5.x 64位用如下命令安装
+rpm -Uvh ftp://ftp.pbone.net/mirror/atrpms.net/el5-x86_64/atrpms/stable/libedit0-3.0-1.20090722cvs.el5.x86_64.rpm
+
+其他系统，请在这里找对应版本：
+http://rpm.pbone.net/index.php3/stat/3/srodzaj/1/search/libedit.so.0
+
+3，配置varnish
+mv /etc/varnish/default.vcl /etc/varnish/default.vcl.bak
+wget http://hello-linux.googlecode.com/files/default.vcl
+mv default.vcl /etc/varnish/default.vcl
+
+
+
+============以下内容根据lnmpv一键安装包总结出来，是否有效未曾得知，谨慎使用
+
+编辑/etc/sysconfig/varnish，修改如下三项的值
+VARNISH_LISTEN_PORT=80
+VARNISH_STORAGE_SIZE=128M  #可以根据服务器内存大小自行调整
+VARNISH_STORAGE="malloc,${VARNISH_STORAGE_SIZE}"       #应该是将使用内存作为存储缓存之地
+
+
+lnmpv一键包中的相关命令：
+
+cd $installdir
+cp varnish /etc/varnish/default.vcl
+cp delcache /usr/sbin/delcache
+
+service varnish stop
+
+chown -R root:php-fpm /var/lib/php/session
+sed -i 's/VARNISH_LISTEN_PORT=6081/VARNISH_LISTEN_PORT=80/g' /etc/sysconfig/varnish
+sed -i 's/VARNISH_STORAGE="file,${VARNISH_STORAGE_FILE},${VARNISH_STORAGE_SIZE}"/VARNISH_STORAGE="malloc,${VARNISH_STORAGE_SIZE}"/g' /etc/sysconfig/varnish
+sed -i '1i\service memcached stop;memcached -d -m 128 -p 11211 -u nobody -l localhost' /etc/rc.local
+sed -i 's/upload_max_filesize = 2M/upload_max_filesize = 64M/g' /etc/php.ini
+sed -i 's/short_open_tag = Off/short_open_tag = On/g' /etc/php.ini
+sed -i 's/user = apache/user = php-fpm/g' /etc/php-fpm.d/www.conf
+sed -i 's/group = apache/group = php-fpm/g' /etc/php-fpm.d/www.conf
+pmmaxspareservers=$(cat /etc/php-fpm.d/www.conf|grep "pm.max_spare_servers =")
+sed -i "s/$pmmaxspareservers/pm.max_spare_servers = 20/g" /etc/php-fpm.d/www.conf
+
+
+service nginx start
+service varnish start
+chkconfig --level 23456 varnish on
+
+
+mv /etc/rc3.d/K10varnish /etc/rc3.d/S17varnish
+mv /etc/rc3.d/K10varnishlog /etc/rc3.d/S17varnishlog
+mv /etc/rc3.d/K10varnishncsa /etc/rc3.d/S17varnishncsa
+mv /etc/rc3.d/K16php-fpm /etc/rc3.d/S17php-fpm
+mv /etc/rc3.d/K36mysqld /etc/rc3.d/S18mysqld
