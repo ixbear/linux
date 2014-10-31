@@ -1,0 +1,366 @@
+#!/bin/sh
+
+Cur_Dir=`dirname $0`
+CONF_DIR=$Cur_Dir/conf
+RES_DIR=$Cur_Dir/result
+MP="/Testmp"
+TEST_MIN_SIZE=1000
+
+#Get the Disk Configuration
+function get_env()
+{
+	if [ ! -e /lib64/libaio.so.1 ] ; then
+		cp $Cur_Dir/libaio.so.1.0.1 /lib64/
+		ln -s /lib64/libaio.so.1.0.1 /lib64/libaio.so.1
+	fi
+      	if [ ! -e /lib/libcrypto.so.4 ] ; then
+		cp $Cur_Dir/libcrypto.so.4 /lib/
+		#ln -s /lib/libcrypto.so.4 /lib/libaio.so.1
+	fi
+if [ ! -e /lib64/libcrypto.so.4 ] ; then
+		cp $Cur_Dir/libcrypto.so.4 /lib64/
+		#ln -s /lib64/libcrypto.so.4 /lib64/libaio.so.1
+	fi
+	Root_Part=`mount | grep "/ " | awk '{print $1}'`
+	Root_Dev=`echo $Root_Part | sed 's/\([^0-9]*\)\([0-9]*\)/\1/'`
+	Root_Index=`echo $Root_Part | sed 's/\([^0-9]*\)\([0-9]*\)/\2/'`
+
+	Disk_Name=""
+	#fdisk -l | grep "^Disk.*bytes$" > tmp.txt
+      fdisk -l | grep "3000" > tmp.txt
+	Disk_Num=`cat tmp.txt | wc -l`
+	while read line 
+	do
+        	Dev_name=`echo $line | awk '{print $2}' | awk -F: '{print $1}'`
+		#Figure out the Device is Virtual or phyicical Device
+		Valid_PTable=`fdisk -l $Dev_name 2>&1 | grep "partition table"`
+		if [ -z "$Valid_PTable" ] ; then
+			Dev_Total_Size=`parted $Dev_name print| grep '^Disk.*megabytes' | awk '{print $5}'|sed 's/^......//'|sed 's/....$//'`
+			Size_Tag=`echo "$Dev_Total_Size / 2" | bc`
+			PART_NUM=`parted $Dev_name print| grep "^[0-9]" | wc -l`
+			i=1
+			MAX_SIZE=0
+			if [ $PART_NUM -gt 0 ] ; then
+				while [ $i -le $PART_NUM ] ; do
+					PART_START=`parted $Dev_name print| grep "^[0-9]" | sed -n "${i}p" | awk '{print $2}'|sed 's/....$//'`
+					PART_END=`parted $Dev_name print| grep "^[0-9]" | sed -n "${i}p" | awk '{print $3}'|sed 's/....$//'`
+					if [ "$PART_START" = "*" ] ; then
+						i=$(($i+1))
+						continue
+					fi
+					PART_SIZE=`echo "$PART_END - $PART_START" | bc`
+					if [ $PART_SIZE -gt $MAX_SIZE ] ; then
+						MAX_SIZE=$PART_SIZE
+						MAX_INDEX=$i
+					fi
+					i=$(($i+1))
+				done
+				if [ $MAX_SIZE -lt $Size_Tag ] ; then
+					echo "Warning!!!!!The $Dev_name existed Part is not Big enough,try to re-part the device!!!!!!!!!!!!!!!"
+				fi
+				Minor=`parted $Dev_name print| grep "^[0-9]" | sed -n "${MAX_INDEX}p" | awk '{print $1}'`
+				Dev_name=`parted $Dev_name print| sed -n 1p | awk '{print $4}'|sed "s/.$/$Minor/g"`
+			fi
+		fi
+		if [ -z "$Disk_Name" ] ; then
+			Disk_Name=$Dev_name
+		else
+        		Disk_Name=${Disk_Name}:${Dev_name}
+		fi
+	done < tmp.txt
+        echo $Disk_Name
+}
+
+function clear_res()
+{
+	rm -rf $CONF_DIR/*
+	rm -rf $RES_DIR/*
+}
+
+function clear_test_file()
+{
+	i=0
+	while [ $i -lt $Disk_Num ]
+	do
+		DIR=`echo "obase=16;$i" | bc | tr [A-Z] [a-z]`
+		rm -f $MP/disk$DIR/[0-9a-f]
+		rm -f $MP/disk$DIR/[0-9a-f][0-9a-f]
+		rm -f $MP/disk$DIR/[0-9a-f][0-9a-f][0-9a-f]
+		rm -f $MP/disk$DIR/[0-9a-f][0-9a-f][0-9a-f]*[0-9a-f]
+		i=$(($i+1))
+	done
+}
+
+#Format the Disk and mount to mp
+function mount_disk()
+{
+	#Creat Mount Dir
+	i=0
+	mkdir -p $MP
+	while [ $i -lt $Disk_Num ]
+	do
+		INDEX=$(($i+1))
+		Dev_Name=`echo $Disk_Name | cut -d: -f $INDEX`
+		echo $Dev_Name $Root_Dev
+                umount $Dev_Name
+                dd if=/dev/zero of=$Dev_Name bs=1k count=1000
+		FS_VALID=`blkid $Dev_Name | awk '{print $3}' | awk -F\" '{print $2}'` 
+		if [ -z $FS_VALID ] ; then
+			echo "The Part is empty,should be re-mkfs....."
+		#	mkfs.ext4 -F $Dev_Name 
+		mkfs.ext4 -m0 -O extent,has_journal -T largefile4 -F $Dev_Name
+                	if [ $? != 0 ] ; then
+				echo "Mkfs on Empty $Dev_Name Fail !!!!!!" && exit 1
+			fi
+		else
+			if [ "$FS_VALID" != "ext4" ] ; then
+				echo "The Existing FS is $FS_VALID,re-mkfs to ext4"
+				umount $Dev_Name 
+				if [ $? != 0 ] ; then
+					echo "Could not unmount $Dev_Name !!!!!!" && exit 1 
+				fi
+			#	mkfs.ext4 -F $Dev_Name 
+			mkfs.ext4 -m0 -O extent,has_journal -T largefile4 -F $Dev_Name
+                        	if [ $? != 0 ] ; then
+					echo "Mkfs on Exist $Dev_Name Fail !!!!!!" && exit 1 
+				fi
+			fi
+		fi
+
+		DIR=`echo "obase=16;$i" | bc | tr [A-Z] [a-z]`
+
+		Cur_mp="$MP/disk$DIR"
+		if [ ! -e $Cur_mp ] ; then
+			mkdir -p $Cur_mp
+		else
+			tmp=`mount | grep "$Cur_mp"`
+			if [ ! -z "$tmp" ] ; then
+				umount $Cur_mp 
+				if [ $? != 0 ] ; then
+					echo "Warning :: Could Not umount $Cur_mp" 
+				fi
+			fi
+		fi
+		#mount -t ext4 $Dev_Name $Cur_mp 
+		mount -o,noatime -t ext4 $Dev_Name $Cur_mp
+                if [ $? != 0 ] ; then
+			echo "Could Not mount $Dev_Name , exit!!!!" && exit 1 
+		fi
+
+		i=$(($i+1))
+	done
+}
+
+function generate_conf_file()
+{
+	rw_type=$1
+	block_size=$2
+	
+	casename=$rw_type-$block_size
+	filename=$CONF_DIR/$casename
+	{
+	echo "#Config File for $casename"
+	echo "[global]"
+	echo "ioengine=libaio" 
+	echo "direct=1" 
+	echo "runtime=300" 
+	echo "iodepth=20" 
+	echo "rw=$rw_type" 
+	echo "bs=$block_size" 
+	echo "loops=10"
+	echo "group_reporting" 
+
+	i=0
+	while [ $i -lt $Disk_Num ]
+	do
+		DIR=`echo "obase=16;$i" | bc | tr [A-Z] [a-z]`
+		echo "[$casename-$i]" 
+		echo "filename=$MP/disk$DIR/io.tst" 
+		exist_size=0
+		if [ -e $MP/disk$i/io.tst ] ; then
+			exist_size=`ls -l $MP/disk$DIR/io.tst | awk '{print $5}'`
+			exist_size=`echo "$exist_size / 1024 / 1024 / 1024" | bc`
+		fi
+		free_size=`df -h $MP/disk$DIR | grep "disk$DIR" | awk '{print $4}'`
+		if [ -z `echo $free_size | grep "T$"` ] ; then 
+			free_size=`echo $free_size | sed 's/[A-Z]//g'`
+		else
+			free_size=`echo $free_size | sed 's/[A-Z]//g'`
+			free_size=`echo "$free_size * 1000" | bc`
+		fi
+		test_size=`echo "($free_size + $exist_size)/ 50" | bc`
+		if [ $TEST_MIN_SIZE -gt $test_size ] ; then
+			TEST_MIN_SIZE=$test_size
+		fi
+		lef_size=`echo "$test_size - $exist_size" | bc`
+		if [ $lef_size -gt 0 ] ; then
+			TEST_FILE_CMD[$i]="dd if=/dev/zero of=$MP/disk$DIR/io.tst bs=1G count=$lef_size seek=$exist_size conv=sync"
+		else
+			TEST_FILE_CMD[$i]=""
+		fi
+		PRE_READ_CMD[$i]="./pre_read_f $MP/disk$DIR/io.tst"
+		echo "size=${test_size}g" 
+		i=$(($i+1))
+	done
+	} > $filename
+	
+}
+
+function pre_testfile()
+{
+	i=0
+	while [ $i -lt $Disk_Num ] 
+	do
+		if [ "${TEST_FILE_CMD[$i]}" != "" ] ; then
+			${TEST_FILE_CMD[$i]} &
+		fi
+		i=$(($i+1))
+	done
+	
+	sleep 2
+
+	exist_dd_pid=`ps aux | grep "dd if" | grep "/dev/zero" | wc -l`
+	while [ $exist_dd_pid != 0 ] ; do
+        	sleep 10
+        	exist_dd_pid=`ps aux | grep "dd if" | grep "/dev/zero" | wc -l`
+	done
+
+	#Pre-Read Test file
+	i=0
+	while [ $i -lt $Disk_Num ]
+	do
+		${PRE_READ_CMD[$i]} &
+		i=$(($i+1))
+	done
+
+	exist_pre_pid=`ps aux | grep "pre_read_f" | wc -l`
+	while [ $exist_pre_pid != 1 ] ; do
+		sleep 10
+		exist_pre_pid=`ps aux | grep "pre_read_f" | wc -l`
+	done	
+}
+
+function collect_res()
+{
+	local _bandwidth _iops _kormb
+	res_file=$1
+	valid_num=`sed -n "/$rw-$bs-0.*groupid/=" $res_file | wc -l`
+	if [ $valid_num != 1 ] ; then
+		echo "Not Valid res file!!!!"
+		exit
+	fi
+	tag_index=`sed -n "/${rw}-${bs}-0.*groupid/=" $res_file`
+	res_index=`echo "$tag_index + 1" | bc`
+	echo $res_index
+	_bandwidth=`sed -n "${res_index}p" $res_file | awk -F, '{print $2}' | awk -F= '{print $2}' | sed 's/[A-Z]*\/s//g'`
+	_kormb=`sed -n "${res_index}p" $res_file | awk -F, '{print $2}' | awk -F= '{print $2}' | sed 's/\([0-9.]*\)//g'`
+	if [ "$_kormb" = "KB/s" ] ; then
+		_bandwidth=`echo "scale=1;$_bandwidth / 1000" | bc`
+	fi
+	_iops=`sed -n "${res_index}p" $res_file | awk -F, '{print $3}' | awk -F= '{print $2}'`
+	if [ "$rw-$bs" = "randread-4k" ] ; then
+		echo "FIO,$rw-$bs,$_bandwidth,$_iops" >> $RES_DIR/fio_td_res.csv
+	else	
+		echo ",$rw-$bs,$_bandwidth,$_iops" >> $RES_DIR/fio_td_res.csv
+	fi
+}
+
+function do_all_fio_test()
+{
+	echo "#####The FIO Test Result" > $RES_DIR/fio_td_res.csv	
+	echo "Benchmark,Mode,BW(MB/S),IOPS" >> $RES_DIR/fio_td_res.csv
+	for rw in randread randwrite read write; do
+		for bs in 4k 64k 128k 256k ; do
+			echo $rw $bs
+			generate_conf_file $rw $bs
+		done
+	done
+
+	pre_testfile
+	
+	rw=""
+	bs=""
+	for rw in randread randwrite read write; do
+		for bs in 4k 64k 128k 256k ; do
+			echo $rw $bs
+			$Cur_Dir/fio $CONF_DIR/$rw-$bs > $RES_DIR/$rw-$bs.res
+			collect_res $RES_DIR/$rw-$bs.res
+		done
+	done
+		
+}	
+
+function do_td_test()
+{
+	#Calculate the Para
+
+	if [ $TEST_MIN_SIZE -eq 1000 ] ; then
+		i=0
+		echo "Calculate the size again"
+		while [ $i -lt $Disk_Num ]
+		do
+			DIR=`echo "obase=16;$i" | bc | tr [A-Z] [a-z]`
+			free_size=`df -h $MP/disk$DIR | grep "disk$DIR" | awk '{print $4}'`
+			if [ -z `echo $free_size | grep "T$"` ] ; then 
+				free_size=`echo $free_size | sed 's/[A-Z]//g'`
+			else
+				free_size=`echo $free_size | sed 's/[A-Z]//g'`
+				free_size=`echo "$free_size * 1000" | bc`
+			fi
+			test_size=`echo "$free_size / 3" | bc`
+			if [ $TEST_MIN_SIZE -gt $test_size ] ; then
+				TEST_MIN_SIZE=$test_size
+			fi
+			i=$(($i+1))
+		done
+	fi
+	TD_BLK_SIZE=32
+	TD_BUF_NUM=128
+	TD_BLK_NUM=`echo "$TEST_MIN_SIZE * 1024 / 32" | bc`
+
+	$Cur_Dir/td -r $MP -b $TD_BLK_SIZE -n $TD_BUF_NUM -c $TD_BLK_NUM $Disk_Num | awk '/Disk/{if($3>0) print $0;else print "END";fflush()}'> $RES_DIR/td.res &
+
+	while [ -z $TMP_END ] ; do
+		TMP_END=`grep "END" $RES_DIR/td.res`
+		sleep 5
+	done
+
+	TD_BW_TMP=`head -1 $RES_DIR/td.res | awk '{print $3}'`
+	TD_BW_TAG=`echo "$TD_BW_TMP * 0.8" | bc`
+	TD_PID=`head -1 $RES_DIR/td.res | cut -d] -f 1 | cut -d[ -f 2`
+	kill -9 $TD_PID
+
+	TD_BW_1=`cat $RES_DIR/td.res | awk -v tag=$TD_BW_TAG 'BEGIN{total=0;len=0} {if($3>tag){total+=$3;len++}} END{printf("%.2f",total/len)}'`
+	i=0
+
+	{
+	  echo "##########The TD result##############"
+	  echo "Name,BW,MB/S"
+	  echo "TD,BW(MB/S),$TD_BW_1"
+	} >> $RES_DIR/fio_td_res.csv
+}
+
+#Main 
+if [ -f /sbin/mkfs.ext4 ]
+   then
+        echo "found ext4 and will run mkfs.ext4"
+   else
+        echo "installing ext4...."
+        cd e2fsprogs-1.41.14/
+        mkdir building
+        cd building
+        ../configure
+        make install
+        cd ../../
+fi
+killall -9 fio
+killall -9 td
+sleep 2 
+get_env
+mount_disk
+clear_res
+clear_test_file
+do_all_fio_test
+#do_td_test
+clear_test_file
+
