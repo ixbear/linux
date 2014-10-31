@@ -1,0 +1,209 @@
+#!/bin/bash
+if [ $1 != 'check' ] && [ $1 != 'build' ]; then
+    echo argument error, please check.
+    echo usage: ./build.sh check b1
+    echo usage: ./build.sh build b1
+    exit 1
+fi
+if [ ! $2 ]; then
+    echo argument error, please check.
+    echo usage: ./build.sh check b1
+    echo usage: ./build.sh build b1
+    exit 1
+fi
+
+function checkrpminiso()
+{
+    mkdir $2
+    mount $1 $2 -o loop
+    if [ ! -f $2/Server/$3 ]; then
+        echo check $1: $3...[not found!]
+        umount $2
+        rm -rf $2
+        exit 1
+    else 
+        echo check $1: $3... [found] 
+        umount $2
+        rm -rf $2
+    fi
+}
+function checkdir()
+{
+    if [ ! -d $1 ]; then
+        echo Error! not found directory: $1
+        exit 1
+    fi
+}
+
+function checkfile()
+{
+    if [ ! -f $1 ]; then
+        echo Error! not fount file: $1
+        exit 1
+    fi
+}
+
+function getbuildfile()
+{
+    newversion=${1#b}
+    oldversion=`expr $newversion - 1`
+    if [ $newversion -ge 2 ]; then
+        oldiso=`ls *b$oldversion*.iso`
+        fileheader=${oldiso%b$oldversion*}
+#    filefooter=${oldiso##*b$oldversion}
+        file=$fileheader$1'_'`date +%Y%m%d`.iso
+    else
+        file=Inspur_K-UX_UnknownVersion_b1_`date +%Y%m%d`.iso
+    fi
+    echo $file
+}
+
+function mountcopy()
+{
+    newversion=${1#b}
+    oldversion=`expr $newversion - 1`
+    if [ $newversion -ge 2 ]; then
+        oldiso=`ls *b$oldversion*.iso`
+    else
+        oldiso=`ls *.iso`
+    fi
+    mkdir b$newversion-cdrom
+    mkdir b$oldversion-cdrom
+    mount $oldiso b$oldversion-cdrom -o loop
+    /bin/cp -rf b$oldversion-cdrom/* b$newversion-cdrom/
+    /bin/cp -rf b$oldversion-cdrom/.treeinfo b$oldversion-cdrom/.discinfo b$newversion-cdrom/
+    echo b$newversion-cdrom
+    umount b$oldversion-cdrom 
+    rm -rf b$oldversion-cdrom
+}
+function cleanup()
+{
+    newversion=${1#b}
+    oldversion=`expr $newversion - 1`
+    if [ "`df -hT | grep b$oldversion-cdrom`" ]; then
+        umount b$oldversion-cdrom
+        rm -rf b$oldversion-cdrom
+    fi
+    if [ -d b$newversion-cdrom ]; then
+        rm -rf b$newversion-cdrom
+    fi
+}
+function check()
+{
+    checkfile $2.change.txt
+    checkdir $2.binary
+    checkdir $2.source
+    newversion=${2#b}
+    
+    if [ $newversion -ge 2 ]; then
+        oldversion=`expr $newversion - 1`
+        oldisonum=`ls *b$oldversion*.iso | wc -l`
+        if [ ! $oldisonum -eq 1 ]; then
+            echo Error! not found or found multi *b$oldversion* iso files.
+            exit 1
+        else
+            oldiso=`ls *b$oldversion*.iso`
+            echo Based on: $oldiso [found]
+        fi
+    else
+        oldisonum=`ls *.iso | wc -l`
+        if [ ! $oldisonum -eq 1 ]; then
+            echo Error! not found any or found multi iso files.
+            exit 1
+        else
+            oldiso=`ls *.iso`
+            echo Based on: $oldiso [found]
+        fi
+    fi
+
+    cat $2.change.txt | grep -v '^#' | while read line
+    do
+        operate=`echo $line | awk -F ' ' '{print $1}'`
+        if [ $operate != 'new' ] && [ $operate != 'rep' ] && [ $operate != 'del' ]; then
+            echo Error! unknown operation '"'$operate'"' in $2.change.txt
+            exit 1
+        fi
+        package=`echo $line | awk -F ' ' '{print $2}'`
+        newfile=`echo $line | awk -F ' ' '{print $3}'`
+        oldfile=`echo $line | awk -F ' ' '{print $4}'`
+        if [ ! $package ] && [ ! $newfile ] &&[ ! $oldfile ]; then
+            echo Syntax error in $2.change.txt: $line
+            exit 1
+        fi
+        if [ $newfile != 'none' ]; then
+            checkfile $2.binary/$newfile
+        fi
+        if [ $oldfile != 'none' ]; then
+            checkrpminiso $oldiso b$oldversion-cdrom $oldfile
+        fi
+    done
+}
+
+function build()
+{
+    check xxx $2
+    newiso=`getbuildfile $2`
+    echo prepare to build $newiso.
+    echo copying files to $2-cdrom...
+    buildroot=`mountcopy $2`
+    xmlfile=`ls tmp/Server/repodata/comps*.xml`
+    xmlfilename=${xmlfile##*/}
+    /bin/cp $xmlfile .
+    echo according to $2.change.txt, change files in $buildroot...
+    cat $2.change.txt | grep -v '^#' | while read line
+    do
+        operate=`echo $line | awk -F ' ' '{print $1}'`
+        package=`echo $line | awk -F ' ' '{print $2}'`
+        newfile=`echo $line | awk -F ' ' '{print $3}'`
+        oldfile=`echo $line | awk -F ' ' '{print $4}'`
+        if [ $operate = 'new' ]; then
+            /bin/cp -f $2.binary/$newfile $buildroot/Server/ 
+            echo Copyed $2.binary/$newfile to $buildroot/Server/
+            sed -i "/<packagereq type=\"default\">x86info<\/packagereq>/a<packagereq type=\"default\">$package<\/packagereq>" $xmlfilename
+        elif [ $operate = 'del' ]; then
+            /bin/rm -rf $buildroot/Server/$oldfile
+            echo Deleted $buildroot/Server/$oldfile
+        elif [ $operate = 'rep' ]; then
+            /bin/rm -rf $buildroot/Server/$oldfile 
+            /bin/cp -f $2.binary/$newfile $buildroot/Server/ 
+        fi
+            
+    done
+    echo All the file listed in $2.change.txt have been changed in $buildroot directory.
+    
+    echo Check again...
+    cat $2.change.txt | grep -v '^#' | while read line
+    do
+        operate=`echo $line | awk -F ' ' '{print $1}'`
+        package=`echo $line | awk -F ' ' '{print $2}'`
+        newfile=`echo $line | awk -F ' ' '{print $3}'`
+        oldfile=`echo $line | awk -F ' ' '{print $4}'`
+        if [ $operate = 'new' ] || [ $operate = 'rep' ]; then
+            checkfile $buildroot/Server/$newfile
+        elif [ $operate = 'del' ]; then
+            if [ -f $buildroot/Server/$oldfile ]; then
+                echo Error! delete $oldfile failed.
+                cleanup $2
+                exit 1
+            fi
+        fi
+    done
+    
+    cd $buildroot/Server
+    rm -rf repodata/
+    echo Start to build new repodata directory.
+    createrepo -g ../../$xmlfilename .
+    cd ..
+    mkisofs -R -J -l -no-emul-boot -c boot.cat -b images/boot.iso -o ../$newiso .
+    cd ..
+    rm -rf $xmlfilename
+    cleanup $2
+    echo Done!
+}
+
+if [ $1 = 'check' ]; then
+    check $1 $2
+fi
+if [ $1 = 'build' ]; then
+    build $1 $2
+fi
